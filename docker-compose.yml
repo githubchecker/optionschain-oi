@@ -1,0 +1,27 @@
+version: '3'
+services:
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    ports:
+      - 9200:9200
+      - 9300:9300
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "http.cors.allow-origin='*'"
+      - "http.cors.enabled=true"
+      - "http.cors.allow-credentials=true"
+      - "http.cors.allow-methods=OPTIONS, POST"
+      - "http.cors.allow-headers=X-Requested-With, X-Auth-Token, Content-Type, Content-Length, Authorization, Access-Control-Allow-Headers, Accept"
+    volumes:
+      - data01:/usr/share/elasticsearch/data
+    networks:
+      - elastic
+      
+volumes:
+  data01:
+    driver: local
+
+networks:
+  elastic:
+    driver: bridge
