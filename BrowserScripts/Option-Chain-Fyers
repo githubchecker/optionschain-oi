@@ -1,0 +1,359 @@
+setTimeout(myCallback, 5000);
+var runonce = 1;
+const index = 'optionchain';
+var propertyNamesToMonitor = [];
+var currentArray, previousArray;
+var expiry = new Date();
+var symbol = '';
+var cacheKey = '';
+const propertyNamesToCheckForChange = ['OI', 'OIChg)'];
+const HDR_ROW = 1;
+function myCallback(a, b) {
+	try
+	{
+	//Enable absolute value
+	checkCheckboxByClassAndId('form-check-input','absoluteChange');
+	
+	let expiryDateStr = getExpiryDate();//getQueryStringParameterByName('expiry');
+	expiry = (new Date(expiryDateStr)).toISOString();
+	symbol = getSymbol();
+	cacheKey = `${index}-${expiry}-${symbol}`;
+	previousArray = JSON.parse(localStorage.getItem(cacheKey));
+	var currentTimeIst = getISTISOString();
+	/*
+	if (runonce === 1) {debugger;previousArray=null;
+		removeElem('.option-chain-table thead:first-child');
+	}
+	*/
+	var currentArray = extractTable('option-chain-table');
+
+	if (havePropertiesChanged(currentArray, previousArray, propertyNamesToMonitor))
+	{
+		bulkInsertToElasticsearch(index, currentArray, currentTimeIst);
+		previousArray = Array.from(currentArray);
+		localStorage.setItem(cacheKey, JSON.stringify(previousArray));
+	}
+
+	runonce++;
+	}
+	catch(ex)
+	{
+		console.log(ex)
+	}
+	finally
+	{
+		setTimeout(myCallback, 5000);
+	}
+}
+
+function getSymbol()
+{
+	let symbol = document.querySelector(`.instrument-header [data-track-category="Instrument Selector"] .select__control .select-text-style`).innerText;
+	return symbol.replace(/\s+/g, '');
+}
+
+function getSpotLtp()
+{
+	let ltp = document.querySelector(`.instrument-header [data-track-category="Instrument Selector"] .select__control .ltp-format`).innerText;
+	return ltp.replace(/\s+/g, '').replace(/,/g, '');
+}
+
+function getExpiryDate()
+{
+	let expDate = document.querySelector(`.instrument-header [data-track-category="ExiryDate Selector"] .select__control`).innerText;
+	return expDate.replace(/\s+/g, '');
+	
+}
+function removeElem(className) {
+	let d1 = document.querySelector(className);
+
+	if (d1) d1.remove();
+}
+
+function extractTable(className) {
+    let table = document.getElementsByClassName(className)[0];
+
+    if (table) {
+        var header = [];
+        var rows = [];
+        var indexOfStrike = -1;
+
+        // Find the index of the 'Strike' column
+        for (var a = HDR_ROW; a < table.rows[HDR_ROW].cells.length; a++) {
+            if (table.rows[1].cells[a].innerText.replace(/[^a-zA-Z\+\-\%]/g, '') === 'Strike') {
+                indexOfStrike = a;
+                break;
+            }
+        }
+
+        // Generate headers
+        for (var i = 0; i < table.rows[HDR_ROW].cells.length; i++) {
+            let initial = i === indexOfStrike ? '' : (i < indexOfStrike) ? 'call_' : 'put_';
+            let htmlHdrName = getHtmlHdrName(table,HDR_ROW,i);
+            if(isOiChangeHeader(htmlHdrName))
+            {
+            	header.push(initial + 'OI');
+            	header.push(initial + 'OIChg');
+            }
+            else if(isLtpHeader(htmlHdrName))
+            {
+            	header.push(initial + 'LTP');
+            }
+            else
+            {
+            	header.push(initial + htmlHdrName);
+            }
+        }
+        
+        if (runonce === 1)
+				{
+	        header.forEach((htmlHdrName, index) => {
+					  if(propertyNamesToCheckForChange.some((substring) => htmlHdrName.includes(substring)))
+					  	propertyNamesToMonitor.push(htmlHdrName);
+					});
+				}
+
+        // Extract rows
+        for (var i = HDR_ROW + 1; i < table.rows.length; i++) {
+            var row = {};
+            let k = 0;
+            for (var j = 0; j < table.rows[i].cells.length; j++) {
+            		let stringValue = table.rows[i].cells[j].innerText.replace(/,/g, '');
+            		let {mainValue, changedVal} = extractNumericParts(stringValue);
+            		//let stringValue = table.rows[i].cells[j].innerText.replace(/[^0-9.\+\-\%]/g, '');
+            		
+            		let parsedVal = parseToFloat(mainValue, header[k])
+	              row[header[k++]] = parsedVal;
+            		
+            		if(isOiChangeHeader(getHtmlHdrName(table,HDR_ROW,j)))
+            		{
+            			row[header[k++]] = parseToFloat(changedVal, header[k]);
+            		}
+            }
+            row.call_LTPChg = 0;
+            row.put_LTPChg = 0;
+            rows.push(row);
+        }
+        return rows;
+    }
+    return [];
+}
+
+function parseToFloat(input, hdrName) {
+	var output = input;
+	if(hdrName && hdrName.includes('Strike'))
+	{
+		output = parseFloat(input.replace(/,/g, ''));
+	}
+	else
+	{
+	  if (typeof input === 'string') {
+      let parsed = parseFloat(input);
+      if (!isNaN(parsed)) {
+      		output = stringToFloatConverter(input);
+      }
+	  } 
+	  else if (typeof input === 'number') {
+      input = input.toString();
+      output = stringToFloatConverter(input);
+  	 }
+	}
+  return output;
+}
+
+function stringToFloatConverter(input)
+{
+	let parsed = 0;
+	let parts = input.split('.');
+	if(parts.length === 1)
+  {
+  		input = parts[0] + '.001';
+  }
+  else
+  {
+  	  input = parts[0] + '.' + parts[1].substring(0, 2) + (parts[1].length === 2 ? '1' : '01');
+  }
+  return parseFloat(input);
+}
+
+function havePropertiesChanged(currentArray, previousArray, propertyNames) {
+	if (!previousArray || previousArray.length == 0) {
+		return true;
+	}
+	var strikesChanged = 0;
+	for (let i = 0; i < currentArray.length; i++) {
+		var isPropertyChanged = false;
+		const currentObj = currentArray[i];
+		
+		const previousObj = previousArray.find(obj => obj.Strike === currentObj.Strike);
+
+		if (!previousObj)
+			continue;
+			
+		currentObj.call_LTPChg = parseToFloat((currentObj.call_LTP - (previousObj.call_LTP??0)),'');
+		currentObj.put_LTPChg = parseToFloat((currentObj.put_LTP - (previousObj.put_LTP??0)),'');
+		
+		for (const propertyName of propertyNames) {
+			if (currentObj[propertyName] !== previousObj[propertyName]) {
+				isPropertyChanged = true;
+				break;
+			}
+		}
+		
+		if(isPropertyChanged)
+			strikesChanged++;
+			
+		if(strikesChanged > 4)
+			return true;
+	}
+
+	return false;
+}
+
+async function bulkInsertToElasticsearch(index, data, currentTimeIst) {
+	let ltp = parseToFloat(getSpotLtp());
+	
+	const bulkBody = [];
+	bulkBody.push({
+		index: { _index: index },
+	});
+	bulkBody.push({ symbol, ltp, timeStamp: currentTimeIst,expiry, optionChain: data });
+
+	try {
+		const response = await fetch('http://localhost:9200/_bulk', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/x-ndjson',
+			},
+			body: bulkBody.map(JSON.stringify).join('\n') + '\n',
+		});
+		if (!response.ok) {
+			throw new Error(`Error: ${response.statusText}`);
+		}
+
+		const responseData = await response.json();
+		console.log('Bulk insert response:', responseData);
+	} catch (error) {
+		console.error('Error during bulk insert:', error);
+	}
+}
+
+function getISTISOString() {
+	// Create a new Date object representing the current date and time in UTC
+	const currentDate = new Date();
+
+	// Get the UTC time in milliseconds
+	const utcTime = currentDate.getTime();
+
+	// IST offset in milliseconds (5 hours 30 minutes)
+	const istOffset = 5.5 * 60 * 60 * 1000;
+
+	// Calculate IST time in milliseconds
+	const istTime = new Date(utcTime + istOffset);
+
+	// Format the IST time to ISO 8601 string
+	const isoString = istTime.toISOString(); //.replace('Z', '+05:30');
+
+	return isoString;
+}
+
+function getQueryStringParameterByName(name) {
+    // Get the full query string from the current URL
+    const queryString = window.location.search;
+    
+    // Create a URLSearchParams object from the query string
+    const urlParams = new URLSearchParams(queryString);
+    
+    // Get the value of the specified parameter
+    return urlParams.get(name);
+}
+
+function isOiChangeHeader(hdrName)
+{
+	return hdrName === 'OIChange'
+}
+
+function isLtpHeader(hdrName)
+{
+	return hdrName === 'LTPChange'
+}
+
+
+const checkCheckboxByClassAndId = (className, id) => {
+  // Find the checkbox element by class name and ID
+  const checkbox = document.querySelector(`.${className}#${id}`);
+  
+  // Check if the checkbox exists
+  if (checkbox) {
+    // Check if the checkbox is not already checked
+    if (!checkbox.checked) {
+      // Mark the checkbox as checked
+      checkbox.click();
+    }
+  } else {
+    alert(`Checkbox with class name "${className}" and ID "${id}" not found.`);
+  }
+}
+
+function getHtmlHdrName(table, r,c)
+{
+	return table.rows[r].cells[c].innerText.replace(/[^a-zA-Z\+\-\%]/g, '')
+}
+
+function getInLakhs(value) {
+  // Use a regular expression to extract the numeric part and the suffix
+  const regex = /^(-?[\d.]+)([a-zA-Z]+)$/;
+  const match = value.match(regex);
+
+  if (!match) {
+    throw new Error("Invalid format");
+  }
+
+  const numericPart = parseFloat(match[1]);
+  const suffix = match[2];
+
+  // Initialize the multiplier
+  let multiplier = 1;
+
+  // Determine the multiplier based on the suffix
+  switch (suffix) {
+    case 'K':
+      multiplier = 0.01; // 1K = 0.01 Lakhs
+      break;
+    case 'L':
+      multiplier = 1; // 1L = 1 Lakhs
+      break;
+    case 'Cr':
+      multiplier = 100; // 1Cr = 100 Lakhs
+      break;
+    default:
+      throw new Error("Invalid suffix");
+  }
+
+  return numericPart * multiplier;
+}
+
+function getOI_Change(input) {
+	
+	let {mainValue, changedVal} = extractNumericParts(input);
+
+  const oi = getInLakhs(mainValue);
+  const oi_chg = getInLakhs(changedVal);
+  
+  return { oi, oi_chg };
+}
+
+function extractNumericParts(input) {
+  // Remove all whitespaces from the input
+  const cleanedInput = input.replace(/\s+/g, '');
+  let parts = cleanedInput.split("(");
+  
+  parts.forEach(p=>{
+  	p = p.replace(")",'');
+  });
+
+  const mainValue = parts[0];
+  const changedVal = parts[1];
+
+  return { mainValue, changedVal };
+}
