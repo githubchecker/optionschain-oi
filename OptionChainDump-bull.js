@@ -17,7 +17,7 @@ function myCallback(a, b) {
 	cacheKey = `${index}-${expiry}-${symbol}`;
 	previousArray = JSON.parse(localStorage.getItem(cacheKey));
 	var currentTimeIst = getISTISOString();
-	if (runonce === 1) {debugger;previousArray=null;
+	if (runonce === 1) {
 		removeElem('.sc-jZthWk tr:first-child');
 	}
 	var currentArray = extractTable('sc-gOjUcv');
