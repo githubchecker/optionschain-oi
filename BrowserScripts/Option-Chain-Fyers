@@ -192,8 +192,6 @@ function parseToFloat(input, hdrName) {
 			output = stringToFloatConverter(input);
 		}
 	}
-	if(output == 1.0E-4)
-		debugger;
 	return output;
 }
 
