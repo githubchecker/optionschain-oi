@@ -1,7 +1,7 @@
 var runonce = 1;
 const index = 'optionchain';
 var propertyNamesToMonitor = [];
-var currentArray, previousArray;
+var currentArray, previousArray, previousIndexLtp;
 var expiry = new Date();
 var symbol = '';
 var cacheKey = '';
@@ -40,19 +40,22 @@ function LoadOptionChain(a, b) {
 		cacheKey = `${index}-${expiry}-${symbol}`;
 		
 		if (runonce === 1 && clearCacheForCurrentExpiry) localStorage.removeItem(cacheKey);
-		previousArray = JSON.parse(localStorage.getItem(cacheKey));
-
+		
+		let ltp = parseToFloat(getSpotLtp());
+		const cachedData = JSON.parse(localStorage.getItem(cacheKey)) || {};
+		previousIndexLtp = cachedData?.previousIndexLtp??ltp;
+		previousArray = cachedData.previousArray;
 		/*
 				if (runonce === 1) {debugger;previousArray=null;
 				removeElem('.option-chain-table thead:first-child');
 				}
 		*/
+		
 		var currentArray = extractTable('option-chain-table');
-
 		if (havePropertiesChanged(currentArray, previousArray, propertyNamesToMonitor)) {
-			bulkInsertToElasticsearch(index, currentArray, currentTimeIst);
+			bulkInsertToElasticsearch(index, currentArray, currentTimeIst, ltp);
 			previousArray = Array.from(currentArray);
-			localStorage.setItem(cacheKey, JSON.stringify(previousArray));
+			localStorage.setItem(cacheKey, JSON.stringify({previousIndexLtp : ltp, previousArray}));
 		}
 
 		runonce++;
@@ -116,7 +119,9 @@ function extractTable(className) {
 			let initial =
 				i === indexOfStrike ? '' : i < indexOfStrike ? 'call_' : 'put_';
 			let htmlHdrName = getHtmlHdrName(table, HDR_ROW, i);
-			if (isOiChangeHeader(htmlHdrName)) {
+			if(htmlHdrName === 'PCR') {
+				header.push(htmlHdrName);
+			} else if (isOiChangeHeader(htmlHdrName)) {
 				header.push(initial + 'OI');
 				header.push(initial + 'OIChg');
 			} else if (isLtpHeader(htmlHdrName)) {
@@ -150,7 +155,6 @@ function extractTable(className) {
 					changedVal = getInLakhs(changedVal);
 				}
 				//let stringValue = table.rows[i].cells[j].innerText.replace(/[^0-9.\+\-\%]/g, '');
-
 				let parsedVal = parseToFloat(mainValue, header[k]);
 				row[header[k++]] = parsedVal;
 
@@ -160,7 +164,7 @@ function extractTable(className) {
 			}
 			row.call_LTPChg = parseToFloat(0, '');
 			row.put_LTPChg = parseToFloat(0, '');
-			row.OIdiff = parseToFloat(0, '');
+			row.OIDiff = parseToFloat((row.put_OI - row.call_OI), '');
 			row.OIDiff_Chg = parseToFloat(0, '');
 			rows.push(row);
 		}
@@ -174,6 +178,10 @@ function parseToFloat(input, hdrName) {
 	if (hdrName && hdrName.includes('Strike')) {
 		output = parseFloat(input.replace(/,/g, ''));
 	} else {
+		if(input === '-')
+		{
+			output = '0';
+		}
 		if (typeof input === 'string') {
 			let parsed = parseFloat(input);
 			if (!isNaN(parsed)) {
@@ -184,20 +192,36 @@ function parseToFloat(input, hdrName) {
 			output = stringToFloatConverter(input);
 		}
 	}
+	if(output == 1.0E-4)
+		debugger;
 	return output;
 }
 
 function stringToFloatConverter(input) {
 	let parsed = 0;
 	let parts = input.split('.');
-	if (parts.length === 1) {
-		input = parts[0] + '.001';
-	} else {
-		input =
-			parts[0] +
-			'.' +
-			parts[1].substring(0, 2) +
-			(parts[1].length === 2 ? '1' : '01');
+	let lastPart = '';
+	if(parts.length == 0)
+	{
+		input = '0.001';
+	}
+	else
+	{
+		if(parts.length >= 1 && parts[0] === '')
+				parts[0] = '0';
+				
+		if (parts.length === 1)
+			lastPart = '001';
+		else
+		{
+			switch(parts[1].length)
+			{
+				case 0: lastPart = '001';break;
+				case 1: lastPart = parts[1].substring(0, 1) + '01';break;
+				default: lastPart = parts[1].substring(0, 2) + '1'; break;
+			}
+		}
+		input = parts[0] + '.' + lastPart;
 	}
 	return parseFloat(input);
 }
@@ -218,19 +242,17 @@ function havePropertiesChanged(currentArray, previousArray, propertyNames) {
 		if (!previousObj) continue;
 
 		currentObj.call_LTPChg = parseToFloat(
-			currentObj.call_LTP - (previousObj.call_LTP ?? 0),
+			(currentObj.call_LTP - previousObj.call_LTP),
 			''
 		);
+		
 		currentObj.put_LTPChg = parseToFloat(
-			currentObj.put_LTP - (previousObj.put_LTP ?? 0),
+			(currentObj.put_LTP - previousObj.put_LTP),
 			''
 		);
-		currentObj.OIdiff = parseToFloat(
-			currentObj.put_OI - currentObj.call_OI,
-			''
-		);
+		
 		currentObj.OIDiff_Chg = parseToFloat(
-			(currentObj.OIdiff ?? 0) - (previousObj.OIdiff ?? 0),
+			(currentObj.OIDiff - previousObj.OIDiff),
 			''
 		);
 		for (const propertyName of propertyNames) {
@@ -241,16 +263,13 @@ function havePropertiesChanged(currentArray, previousArray, propertyNames) {
 		}
 
 		if (isPropertyChanged) strikesChanged++;
-
-		if (strikesChanged > 4) return true;
 	}
+	if (strikesChanged > 4) return true;
 
 	return false;
 }
 
-async function bulkInsertToElasticsearch(index, data, currentTimeIst) {
-	let ltp = parseToFloat(getSpotLtp());
-
+async function bulkInsertToElasticsearch(index, data, currentTimeIst, ltp) {
 	const bulkBody = [];
 
 	const documentId = `${symbol}_${expiry}_${currentTimeIst}`; // Create a unique ID for the document
@@ -261,6 +280,7 @@ async function bulkInsertToElasticsearch(index, data, currentTimeIst) {
         doc: {
             symbol,
             ltp,
+            ltp_Chg: parseToFloat(ltp - previousIndexLtp),
             timeStamp: currentTimeIst,
             expiry,
             optionChain: data,
