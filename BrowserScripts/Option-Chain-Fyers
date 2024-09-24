@@ -11,6 +11,8 @@ var isPageLoaded = false;
 var clearCacheForCurrentExpiry = false;
 var Start_Option_History_Replay = false;
 var isCurrentHistoryDumpComplete = false;
+var isCurrentHistoryDumpRetry = false;
+var isHistoricalDataLoadFinished = false;
 
 function isCurrentUrlMatching() {
 	const regex =
@@ -23,10 +25,15 @@ function LoadOptionChain(a, b) {
 	let isError = false;
 	try {
 		//Enable absolute value
-		checkCheckboxByClassAndId('form-check-input', 'absoluteChange');
+		InitPage();
+		
 		if (!isPageLoaded) return;
 		
 		var currentTimeIst = getISTISOString(new Date());
+		let expiryDateStr = getExpiryDate(); //getQueryStringParameterByName('expiry');
+		expiry = new Date(expiryDateStr).toISOString();
+		symbol = getSymbol();
+		
 		if (IsHistoricalData()) {
 			currentTimeIst = getHistoricalTimeStamp();
 		}
@@ -34,10 +41,8 @@ function LoadOptionChain(a, b) {
 		{
 			currentTimeIst = getISTISOString(findImmediatePreviousInterval(new Date(), intervals));
 		}
-		let expiryDateStr = getExpiryDate(); //getQueryStringParameterByName('expiry');
-		expiry = new Date(expiryDateStr).toISOString();
-		symbol = getSymbol();
-		cacheKey = `${index}-${expiry}-${symbol}`;
+		let datePart = currentTimeIst.split('T')[0];
+		cacheKey = `${index}-${expiry}-${symbol}-${datePart}`;
 		
 		if (runonce === 1 && clearCacheForCurrentExpiry) localStorage.removeItem(cacheKey);
 		
@@ -61,11 +66,26 @@ function LoadOptionChain(a, b) {
 		runonce++;
 	} catch (ex) {
 		isError = true;
+		isCurrentHistoryDumpRetry = true;
 		console.log(ex);
 	} finally {
 		isCurrentHistoryDumpComplete = !isError;
-		setTimeout(LoadOptionChain, 5000);
+		if(IsHistoricalData() && isHistoricalDataLoadFinished)
+		{
+			return;
+		}
+		else
+		{
+			setTimeout(LoadOptionChain, 5000);
+		}
 	}
+}
+
+function InitPage()
+{
+	let isAbsoluteSelected = checkCheckboxByClassAndId('form-check-input', 'absoluteChange');
+	let isIntervalSetTo3Min = setChangeDetectionInterval();
+	isPageLoaded = isAbsoluteSelected && isIntervalSetTo3Min;
 }
 
 function getSymbol() {
@@ -83,10 +103,9 @@ function getSpotLtp() {
 }
 
 function getExpiryDate() {
-	let expDate = document.querySelector(
-		`.instrument-header [data-track-category="ExiryDate Selector"] .select__control`
-	).innerText;
-	return expDate.replace(/\s+/g, '');
+	let expDate = document.querySelector(`.instrument-header [data-track-category="ExiryDate Selector"] .form-select`);
+	let expDateStr = expDate[expDate.selectedIndex].value
+	return expDateStr.replace(/\s+/g, '');
 }
 
 function removeElem(className) {
@@ -166,6 +185,9 @@ function extractTable(className) {
 			row.put_LTPChg = parseToFloat(0, '');
 			row.OIDiff = parseToFloat((row.put_OI - row.call_OI), '');
 			row.OIDiff_Chg = parseToFloat(0, '');
+			row.OIChgDiff = parseToFloat((row.put_OIChg - row.call_OIChg), '');
+			row.OIChgDiff_Chg = parseToFloat(0, '');
+			
 			rows.push(row);
 		}
 		return rows;
@@ -246,6 +268,11 @@ function havePropertiesChanged(currentArray, previousArray, propertyNames) {
 		
 		currentObj.put_LTPChg = parseToFloat(
 			(currentObj.put_LTP - previousObj.put_LTP),
+			''
+		);
+		
+		currentObj.OIChgDiff_Chg = parseToFloat(
+			(currentObj.OIChgDiff - previousObj.OIChgDiff),
 			''
 		);
 		
@@ -392,21 +419,48 @@ function isLtpHeader(hdrName) {
 }
 
 const checkCheckboxByClassAndId = (className, id) => {
-	// Find the checkbox element by class name and ID
-	const checkbox = document.querySelector(`.${className}#${id}`);
-
-	// Check if the checkbox exists
-	if (checkbox) {
-		// Check if the checkbox is not already checked
-		if (!checkbox.checked) {
-			// Mark the checkbox as checked
-			checkbox.click();
-			isPageLoaded = true;
+	let success = false;
+	let checkbox = null;
+	try
+	{
+		checkbox = document.querySelector(`.${className}#${id}`);
+		if (checkbox) {
+			if (!checkbox.checked) {
+				checkbox.click();
+			}
+		} else {
+			alert(`Checkbox with class name "${className}" and ID "${id}" not found.`);
 		}
-	} else {
-		alert(`Checkbox with class name "${className}" and ID "${id}" not found.`);
 	}
+	finally
+	{
+		success = checkbox && checkbox.checked;
+	}
+	return success;
 };
+
+const setChangeDetectionInterval = (className, id) => {
+	let success = false;
+	const inputElemntDiff = document.querySelector('.comparision-interval-typehead .form-select');
+	try
+	{
+		if (inputElemntDiff.value !== '3') {
+			setNativeValue(inputElemntDiff, '3');
+		}
+	}
+	finally
+	{
+		success = inputElemntDiff.value === '3';
+		isPageLoaded =success;
+		if (!success)
+		{
+			isPageLoaded = false;
+		}
+	}
+	return success;
+};
+
+
 
 function getHtmlHdrName(table, r, c) {
 	return table.rows[r].cells[c].innerText.replace(/[^a-zA-Z\+\-\%]/g, '');
@@ -475,52 +529,83 @@ const callAsyncFunctionStartReplay = () => {
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+
 function setNativeValue(element, value) {
-    const valueSetter = Object.getOwnPropertyDescriptor(element, 'value').set;
-    const prototype = Object.getPrototypeOf(element);
-    const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value').set;
-
-    if (valueSetter && valueSetter !== prototypeValueSetter) {
-        prototypeValueSetter.call(element, value);
-    } else {
-        valueSetter.call(element, value);
-    }
-
-    // Create and dispatch the input event to notify React of the change
-    const inputEvent = new Event('input', { bubbles: true });
-    element.dispatchEvent(inputEvent);
-
-
-    // Create and dispatch the focusout event
-    const focusOutEvent = new FocusEvent('focusout', { bubbles: true });
-    element.dispatchEvent(focusOutEvent);
+		let valueSetter,prototype,prototypeValueSetter;
+		if (element.tagName === 'SELECT')
+		{
+			element.value = value;
+      let changeEvent = new Event('change', { bubbles: true });
+      element.dispatchEvent(changeEvent);
+		}
+		else {
+	    valueSetter = Object.getOwnPropertyDescriptor(element, 'value').set;
+	    prototype = Object.getPrototypeOf(element);
+	    prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value').set;
+		
+	    if (valueSetter && valueSetter !== prototypeValueSetter) {
+	        prototypeValueSetter.call(element, value);
+	    } else {
+	        valueSetter.call(element, value);
+	    }
+	
+	    // Create and dispatch the input event to notify React of the change
+	    const inputEvent = new Event('input', { bubbles: true });
+	    element.dispatchEvent(inputEvent);
+	
+	
+	    // Create and dispatch the focusout event
+	    const focusOutEvent = new FocusEvent('focusout', { bubbles: true });
+	    element.dispatchEvent(focusOutEvent);
+		}
 }
 
 const startReplay = async () => {
-
+	let interval = 3;
+	isHistoricalDataLoadFinished = false;
+	
 	const inputElementH = document.querySelector('input.react-time-picker__inputGroup__input.react-time-picker__inputGroup__hour');
 	
 	const inputElementM = document.querySelector('input.react-time-picker__inputGroup__input.react-time-picker__inputGroup__minute');
 	
+	let lastHour =0,lastMin = -1;
 	for(h = 9; h <= 15; h++)
 	{
 		let start = 1; end = 59;
 		if(h === 9)
-			start = 21;
+			start = lastMin === -1 ? 17 : (lastMin + 3 - 60);
 		else if(h===15)
 			end = 15;
 			
 		setNativeValue(inputElementH, h);
 		
-		for(m = start; m <= end; m++)
+		for(m = start; m <= end; m = m+interval)
 		{
 			setNativeValue(inputElementM, m);
 			isCurrentHistoryDumpComplete = false;
 			
 			while(!isCurrentHistoryDumpComplete)
+			{
 				await sleep(2000);//Wait for loading option chain
+				if(isCurrentHistoryDumpRetry)
+				{
+					h = lastHour;
+					m = lastMin;
+					setNativeValue(inputElementH, h);
+					setNativeValue(inputElementM, m);
+					await sleep(2000);//Wait for loading option chain
+					isCurrentHistoryDumpRetry = false;
+					break;
+				}
+			}
+			lastHour = h;
+			lastMin = m;
+			
 		}
 	}
+	
+	isHistoricalDataLoadFinished = true;
+	localStorage.removeItem(cacheKey)
 }
 
 
