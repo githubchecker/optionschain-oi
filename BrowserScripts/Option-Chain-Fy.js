@@ -16,7 +16,7 @@ var isHistoricalDataLoadFinished = false;
 
 function isCurrentUrlMatching() {
 	const regex =
-		/^https:\/\/instaoptions\.fyers\.in\/instruments.*currentTab=option_chain$/;
+		/^https:\/\/*\.in\/instruments.*currentTab=option_chain$/;
 	const currentUrl = window.location.href;
 	return regex.test(currentUrl);
 }
