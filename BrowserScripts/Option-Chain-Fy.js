@@ -16,7 +16,7 @@ var isHistoricalDataLoadFinished = false;
 
 function isCurrentUrlMatching() {
 	const regex =
-		/^https:\/\/*\.in\/instruments.*currentTab=option_chain$/;
+		/^https:\/\/instaoptions\.fyers\.in\/instruments.*currentTab=option_chain$/;
 	const currentUrl = window.location.href;
 	return regex.test(currentUrl);
 }
@@ -36,6 +36,10 @@ function LoadOptionChain(a, b) {
 		
 		if (IsHistoricalData()) {
 			currentTimeIst = getHistoricalTimeStamp();
+			if(getDateFromISTISOString(currentTimeIst) > new Date())
+			{
+				throw new Error(currentTimeIst + " is future date");
+			}
 		}
 		else
 		{
@@ -145,6 +149,7 @@ function extractTable(className) {
 				header.push(initial + 'OIChg');
 			} else if (isLtpHeader(htmlHdrName)) {
 				header.push(initial + 'LTP');
+				header.push(initial + 'LTPChg');
 			} else {
 				header.push(initial + htmlHdrName);
 			}
@@ -168,21 +173,24 @@ function extractTable(className) {
 			for (var j = 0; j < table.rows[i].cells.length; j++) {
 				let stringValue = table.rows[i].cells[j].innerText.replace(/,/g, '');
 				let { mainValue, changedVal } = extractNumericParts(stringValue);
-
+				
 				if (isOiChangeHeader(getHtmlHdrName(table, HDR_ROW, j))) {
 					mainValue = getInLakhs(mainValue);
 					changedVal = getInLakhs(changedVal);
 				}
-				//let stringValue = table.rows[i].cells[j].innerText.replace(/[^0-9.\+\-\%]/g, '');
-				let parsedVal = parseToFloat(mainValue, header[k]);
-				row[header[k++]] = parsedVal;
-
-				if (isOiChangeHeader(getHtmlHdrName(table, HDR_ROW, j))) {
-					row[header[k++]] = parseToFloat(changedVal, header[k]);
+				else if (isLtpHeader(getHtmlHdrName(table, HDR_ROW, j))) {
+					mainValue = getInRs(mainValue);
+					changedVal = getInRs(changedVal);
 				}
+				
+				let parsedVal = parseToFloat(mainValue, header[k]);
+				row[header[k]] = parsedVal;k++;
+
+				if (isOiChangeHeader(getHtmlHdrName(table, HDR_ROW, j)) || isLtpHeader(getHtmlHdrName(table, HDR_ROW, j))) {
+					row[header[k]] = parseToFloat(changedVal, header[k]);k++;
+				}
+				//Ltp-Header-End
 			}
-			row.call_LTPChg = parseToFloat(0, '');
-			row.put_LTPChg = parseToFloat(0, '');
 			row.OIDiff = parseToFloat((row.put_OI - row.call_OI), '');
 			row.OIDiff_Chg = parseToFloat(0, '');
 			row.OIChgDiff = parseToFloat((row.put_OIChg - row.call_OIChg), '');
@@ -354,6 +362,15 @@ function getISTISOString(date) {
 	return isoString;
 }
 
+function getDateFromISTISOString(dateString) {
+	let [datePart, timePart] = dateString.split('T');
+	let [year, month, day] = datePart.split('-');
+	let [hours, minutes, seconds] = timePart.split(':');
+	
+	let fixedDate = new Date(year, month - 1, day, hours, minutes, seconds.slice(0, 2));
+	return fixedDate;
+}
+
 function getHistoricalTimeStamp() {
 	const months = [
 		'Jan',
@@ -501,6 +518,38 @@ function getInLakhs(value) {
 	return numericPart * multiplier;
 }
 
+function getInRs(value) {
+	// Use a regular expression to extract the numeric part and the suffix
+	if(!value || value === '-')
+		return 0;
+	
+	const regex = /^(-?[\d.]+)([a-zA-Z]*)$/;
+	const match = value.match(regex);
+
+	if (!match)
+		return 0;
+
+	const numericPart = parseFloat(match[1]);
+	const suffix = match[2];
+
+	// Initialize the multiplier
+	let multiplier = 1;
+
+	// Determine the multiplier based on the suffix
+	switch (suffix) {
+		case 'K':
+			multiplier = 1000; // 1K = 0.01 Lakhs
+			break;
+		case 'L':
+			multiplier = 10000; // 1L = 1 Lakhs
+			break;
+		default:
+			multiplier = 1;
+	}
+
+	return numericPart * multiplier;
+}
+
 function extractNumericParts(input) {
 	// Remove all whitespaces from the input
 	const cleanedInput = input.replace(/\s+/g, '');
@@ -621,7 +670,7 @@ function generateIntervals() {
 
     while (startTime <= endTime) {
         intervals.push(new Date(startTime));
-        startTime.setMinutes(startTime.getMinutes() + 3); // Increment by 3 minutes
+        startTime.setMinutes(startTime.getMinutes() + 1); // Increment by 3 minutes
     }
 
     return intervals;
